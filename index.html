@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<title>Passing-Bablok 회귀분석</title>
+<title>Passing-Bablok & Bland-Altman 분석</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
@@ -30,7 +30,7 @@
 </head>
 <body>
 
-<h1>Passing-Bablok 회귀분석</h1>
+<h1>Passing-Bablok & Bland-Altman 분석</h1>
 <p>두 측정법 비교 (method comparison). 데이터를 붙여넣고 <b>분석 실행</b>을 누르세요.</p>
 
 <section>
@@ -57,6 +57,12 @@
   <div class="chart-wrap"><canvas id="chart"></canvas></div>
 </section>
 
+<section id="baSection" style="display:none">
+  <h2>Bland-Altman Plot</h2>
+  <div class="chart-wrap"><canvas id="baChart"></canvas></div>
+  <p style="color:#666; font-size:12px;">※ X축: 두 방법의 평균 (X+Y)/2, Y축: 차이 (Y−X). 점선은 ±1.96 SD 일치 한계(Limits of Agreement).</p>
+</section>
+
 <section id="cusumSection" style="display:none">
   <h2>CUSUM 선형성 검정</h2>
   <div class="chart-wrap"><canvas id="cusumChart"></canvas></div>
@@ -64,7 +70,7 @@
 </section>
 
 <footer>
-  Passing & Bablok, J Clin Chem Clin Biochem 1983;21:709-720. 모든 계산은 브라우저 내에서 수행됩니다 (서버 전송 없음).
+  Passing & Bablok, J Clin Chem Clin Biochem 1983;21:709-720. | Bland & Altman, Lancet 1986;327:307-310. 모든 계산은 브라우저 내에서 수행됩니다 (서버 전송 없음).
 </footer>
 
 <script>
@@ -219,12 +225,31 @@ function cusumLinearity(pairs, slope, intercept, alpha) {
   return { maxT: T, critical, linear: T < critical, series, nTotal };
 }
 
+/* ---------- Bland-Altman ---------- */
+function blandAltman(pairs) {
+  const n = pairs.length;
+  const diffs = pairs.map(([x,y]) => y - x);
+  const means = pairs.map(([x,y]) => (x + y) / 2);
+  const meanDiff = diffs.reduce((a,b) => a+b, 0) / n;
+  const sd = Math.sqrt(diffs.reduce((a,d) => a + (d - meanDiff)*(d - meanDiff), 0) / (n - 1));
+  const loA_upper = meanDiff + 1.96 * sd;
+  const loA_lower = meanDiff - 1.96 * sd;
+  // CI for mean difference (t 대신 z 근사)
+  const seMean = sd / Math.sqrt(n);
+  const meanCI = [meanDiff - 1.96 * seMean, meanDiff + 1.96 * seMean];
+  // CI for LoA
+  const seLoA = sd * Math.sqrt(3 / n);
+  const loA_upperCI = [loA_upper - 1.96 * seLoA, loA_upper + 1.96 * seLoA];
+  const loA_lowerCI = [loA_lower - 1.96 * seLoA, loA_lower + 1.96 * seLoA];
+  return { diffs, means, meanDiff, sd, loA_upper, loA_lower, meanCI, loA_upperCI, loA_lowerCI, n };
+}
+
 /* ---------- 렌더링 ---------- */
 function fmt(v, d=4) {
   if (!isFinite(v)) return v > 0 ? '+∞' : v < 0 ? '-∞' : 'NaN';
   return Number(v).toFixed(d);
 }
-function renderResults(res, pb, kt, cu) {
+function renderResults(res, pb, kt, cu, ba) {
   const rows = [
     ['표본수 n', res.pairs.length],
     ['제외된 행', res.skipped],
@@ -239,6 +264,12 @@ function renderResults(res, pb, kt, cu) {
     ['CUSUM 통계량 T', fmt(cu.maxT, 3)],
     ['CUSUM 임계값', fmt(cu.critical, 3)],
     ['선형성 판정', cu.linear ? '선형 (H0 기각 못함)' : '비선형 (H0 기각)'],
+    ['', '<b>── Bland-Altman ──</b>'],
+    ['평균 차이 (Bias)', `${fmt(ba.meanDiff)}  (95% CI: ${fmt(ba.meanCI[0])} ~ ${fmt(ba.meanCI[1])})`],
+    ['차이의 SD', fmt(ba.sd)],
+    ['일치 상한 (+1.96 SD)', `${fmt(ba.loA_upper)}  (95% CI: ${fmt(ba.loA_upperCI[0])} ~ ${fmt(ba.loA_upperCI[1])})`],
+    ['일치 하한 (−1.96 SD)', `${fmt(ba.loA_lower)}  (95% CI: ${fmt(ba.loA_lowerCI[0])} ~ ${fmt(ba.loA_lowerCI[1])})`],
+    ['Bias 판정', (ba.meanCI[0] <= 0 && ba.meanCI[1] >= 0) ? '없음 (평균 차이 CI가 0 포함)' : '있음 (평균 차이 CI가 0 불포함)'],
   ];
   const html = rows.map(([k,v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('');
   document.getElementById('resultsTable').innerHTML = html;
@@ -263,44 +294,133 @@ function renderResults(res, pb, kt, cu) {
     ? `③ <b>두 방법의 관계는 직선으로 잘 설명됩니다.</b> (선형성 OK — Passing-Bablok 결과를 그대로 해석해도 됩니다.)`
     : `③ <b>두 방법의 관계가 직선이 아닐 가능성이 있습니다.</b> 값의 범위에 따라 차이가 달라질 수 있으니 해석에 주의하세요.`;
 
-  document.getElementById('summaryBox').innerHTML = `<b>총평</b><br>${biasLine}<br>${corrLine}<br>${linLine}`;
+  const baBiasOK = (ba.meanCI[0] <= 0 && ba.meanCI[1] >= 0);
+  const biasDir = ba.meanDiff > 0 ? '방법 2(Y)가 방법 1(X)보다 평균 ' + fmt(Math.abs(ba.meanDiff),3) + ' 높게'
+                                   : '방법 2(Y)가 방법 1(X)보다 평균 ' + fmt(Math.abs(ba.meanDiff),3) + ' 낮게';
+  const loaRange = fmt(ba.loA_upper - ba.loA_lower, 3);
+  let baLine;
+  if (baBiasOK) {
+    baLine = `④ <b>Bland-Altman: 두 방법의 평균 차이가 통계적으로 0과 다르지 않습니다.</b>`
+      + `<br>&nbsp;&nbsp;&nbsp;→ 한쪽이 일관되게 높거나 낮지 않습니다.`
+      + `<br>&nbsp;&nbsp;&nbsp;→ 개별 측정값은 최대 ${loaRange} 정도 차이날 수 있습니다 (일치 한계: ${fmt(ba.loA_lower,3)} ~ ${fmt(ba.loA_upper,3)}).`
+      + `<br>&nbsp;&nbsp;&nbsp;→ 이 범위가 임상적으로 허용 가능한지는 전문가 판단이 필요합니다.`;
+  } else {
+    baLine = `④ <b>Bland-Altman: ${biasDir} 측정하는 경향이 있습니다.</b>`
+      + `<br>&nbsp;&nbsp;&nbsp;→ 평균 차이(Bias) = ${fmt(ba.meanDiff,3)} — 두 방법 간 일정한 편향이 존재합니다.`
+      + `<br>&nbsp;&nbsp;&nbsp;→ 개별 측정값은 ${fmt(ba.loA_lower,3)} ~ ${fmt(ba.loA_upper,3)} 범위에서 차이가 납니다 (일치 한계).`
+      + `<br>&nbsp;&nbsp;&nbsp;→ 이 편향과 산포가 허용 가능한 수준인지는 임상적 맥락에서 판단해야 합니다.`;
+  }
+
+  document.getElementById('summaryBox').innerHTML = `<b>총평</b><br>${biasLine}<br>${corrLine}<br>${linLine}<br>${baLine}`;
 
   document.getElementById('resultsSection').style.display = '';
 }
 
-let mainChart = null, cusumChart = null;
+let mainChart = null, cusumChart = null, baChartObj = null;
 function renderChart(pairs, pb) {
   const xs = pairs.map(p=>p[0]);
   const ys = pairs.map(p=>p[1]);
   const xMin = Math.min(...xs), xMax = Math.max(...xs);
   const yMin = Math.min(...ys), yMax = Math.max(...ys);
-  const lo = Math.min(xMin, yMin), hi = Math.max(xMax, yMax);
+  const xPad = (xMax - xMin) * 0.08 || 1;
+  const yPad = (yMax - yMin) * 0.08 || 1;
+  const xLo = xMin - xPad, xHi = xMax + xPad;
+  const yLo = yMin - yPad, yHi = yMax + yPad;
+  // 회귀선: X축 범위에서 Y값 계산 후, Y축 범위로 클리핑
+  const regPts = [];
+  const rY1 = pb.intercept + pb.slope * xLo;
+  const rY2 = pb.intercept + pb.slope * xHi;
+  // 두 끝점을 Y축 범위로 클리핑
+  function clampToYRange(x1,y1,x2,y2) {
+    const result = [];
+    for (const [x,y] of [[x1,y1],[x2,y2]]) {
+      if (y >= yLo && y <= yHi) result.push({x,y});
+    }
+    if (pb.slope !== 0) {
+      for (const yBnd of [yLo, yHi]) {
+        const xAt = (yBnd - pb.intercept) / pb.slope;
+        if (xAt >= xLo && xAt <= xHi && yBnd >= yLo && yBnd <= yHi) {
+          result.push({x:xAt, y:yBnd});
+        }
+      }
+    }
+    result.sort((a,b)=>a.x-b.x);
+    return result.length >= 2 ? [result[0], result[result.length-1]] : result;
+  }
+  const regClip = clampToYRange(xLo, rY1, xHi, rY2);
+  // 동등선 y=x도 양축 범위로 클리핑
+  const eqX1 = Math.max(xLo, yLo), eqX2 = Math.min(xHi, yHi);
+  const showIdentity = eqX1 < eqX2;
   const ctx = document.getElementById('chart').getContext('2d');
   if (mainChart) mainChart.destroy();
+  const datasets = [
+    { label: '데이터', data: pairs.map(([x,y])=>({x,y})), backgroundColor: '#2c7be5', pointRadius: 4 },
+  ];
+  if (regClip.length >= 2) {
+    datasets.push({ label: `PB 회귀선 (Y=${fmt(pb.intercept,3)}+${fmt(pb.slope,3)}X)`, type:'line',
+      data: regClip, borderColor:'#e55353', borderWidth:2, pointRadius:0, fill:false });
+  }
+  if (showIdentity) {
+    datasets.push({ label: '동등선 y=x', type:'line',
+      data: [{x:eqX1,y:eqX1},{x:eqX2,y:eqX2}],
+      borderColor:'#888', borderDash:[6,4], borderWidth:1, pointRadius:0, fill:false });
+  }
   mainChart = new Chart(ctx, {
     type: 'scatter',
-    data: {
-      datasets: [
-        { label: '데이터', data: pairs.map(([x,y])=>({x,y})), backgroundColor: '#2c7be5', pointRadius: 4 },
-        { label: `PB 회귀선 (Y=${fmt(pb.intercept,3)}+${fmt(pb.slope,3)}X)`, type:'line',
-          data: [{x:xMin,y:pb.intercept+pb.slope*xMin},{x:xMax,y:pb.intercept+pb.slope*xMax}],
-          borderColor:'#e55353', borderWidth:2, pointRadius:0, fill:false },
-        { label: '동등선 y=x', type:'line',
-          data: [{x:lo,y:lo},{x:hi,y:hi}],
-          borderColor:'#888', borderDash:[6,4], borderWidth:1, pointRadius:0, fill:false },
-      ]
-    },
+    data: { datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       scales: {
-        x: { title:{display:true,text:'X (방법 1)'}, min: lo - (hi-lo)*0.05, max: hi + (hi-lo)*0.05 },
-        y: { title:{display:true,text:'Y (방법 2)'}, min: lo - (hi-lo)*0.05, max: hi + (hi-lo)*0.05 }
+        x: { title:{display:true,text:'X (방법 1)'}, min: xLo, max: xHi },
+        y: { title:{display:true,text:'Y (방법 2)'}, min: yLo, max: yHi }
       }
     }
   });
   document.getElementById('chart').parentElement.style.height = '450px';
   document.getElementById('chartSection').style.display = '';
 }
+function renderBA(ba) {
+  const ctx = document.getElementById('baChart').getContext('2d');
+  if (baChartObj) baChartObj.destroy();
+  const mMin = Math.min(...ba.means), mMax = Math.max(...ba.means);
+  const xPad = (mMax - mMin) * 0.08 || 1;
+  // Y축: 차이 데이터 + LoA + 0 기준선 모두 포함하는 범위
+  const dMin = Math.min(...ba.diffs, ba.loA_lower, 0);
+  const dMax = Math.max(...ba.diffs, ba.loA_upper, 0);
+  const yPad = (dMax - dMin) * 0.1 || 1;
+  const xLo = mMin - xPad, xHi = mMax + xPad;
+  const yLo = dMin - yPad, yHi = dMax + yPad;
+  baChartObj = new Chart(ctx, {
+    type: 'scatter',
+    data: {
+      datasets: [
+        { label: '차이 (Y−X)', data: ba.means.map((m,i)=>({x:m, y:ba.diffs[i]})), backgroundColor:'#2c7be5', pointRadius:4 },
+        { label: `Bias (${fmt(ba.meanDiff,3)})`, type:'line',
+          data: [{x:xLo, y:ba.meanDiff},{x:xHi, y:ba.meanDiff}],
+          borderColor:'#e55353', borderWidth:2, pointRadius:0, fill:false },
+        { label: `+1.96 SD (${fmt(ba.loA_upper,3)})`, type:'line',
+          data: [{x:xLo, y:ba.loA_upper},{x:xHi, y:ba.loA_upper}],
+          borderColor:'#888', borderDash:[6,4], borderWidth:1.5, pointRadius:0, fill:false },
+        { label: `−1.96 SD (${fmt(ba.loA_lower,3)})`, type:'line',
+          data: [{x:xLo, y:ba.loA_lower},{x:xHi, y:ba.loA_lower}],
+          borderColor:'#888', borderDash:[6,4], borderWidth:1.5, pointRadius:0, fill:false },
+        { label: '0 기준선', type:'line',
+          data: [{x:xLo, y:0},{x:xHi, y:0}],
+          borderColor:'#ccc', borderDash:[3,3], borderWidth:1, pointRadius:0, fill:false },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { title:{display:true,text:'평균 (X+Y)/2'}, min: xLo, max: xHi },
+        y: { title:{display:true,text:'차이 (Y−X)'}, min: yLo, max: yHi }
+      }
+    }
+  });
+  document.getElementById('baChart').parentElement.style.height = '400px';
+  document.getElementById('baSection').style.display = '';
+}
+
 function renderCusum(cu) {
   const ctx = document.getElementById('cusumChart').getContext('2d');
   if (cusumChart) cusumChart.destroy();
@@ -345,8 +465,10 @@ function run() {
     const pb = passingBablok(parsed.pairs, alpha);
     const kt = kendallTau(parsed.pairs);
     const cu = cusumLinearity(parsed.pairs, pb.slope, pb.intercept, alpha);
-    renderResults(parsed, pb, kt, cu);
+    const ba = blandAltman(parsed.pairs);
+    renderResults(parsed, pb, kt, cu, ba);
     renderChart(parsed.pairs, pb);
+    renderBA(ba);
     renderCusum(cu);
     if (parsed.warnings.length || parsed.skipped) {
       const w = parsed.warnings.slice();
@@ -392,6 +514,7 @@ document.getElementById('clear').addEventListener('click', () => {
   showBanner('errBanner', '');
   document.getElementById('resultsSection').style.display = 'none';
   document.getElementById('chartSection').style.display = 'none';
+  document.getElementById('baSection').style.display = 'none';
   document.getElementById('cusumSection').style.display = 'none';
 });
 </script>
