@@ -292,7 +292,10 @@ function renderChart(pairs, pb) {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      scales: { x: { title:{display:true,text:'X (방법 1)'} }, y: { title:{display:true,text:'Y (방법 2)'} } }
+      scales: {
+        x: { title:{display:true,text:'X (방법 1)'}, min: lo - (hi-lo)*0.05, max: hi + (hi-lo)*0.05 },
+        y: { title:{display:true,text:'Y (방법 2)'}, min: lo - (hi-lo)*0.05, max: hi + (hi-lo)*0.05 }
+      }
     }
   });
   document.getElementById('chart').parentElement.style.height = '450px';
